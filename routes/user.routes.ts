@@ -1,5 +1,5 @@
 import express from 'express';
-import { getProfile, updateProfile } from '../controllers/userControllers/profile.controller';
+import { getProfile, updateProfile } from '../controllers/profile.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 import { updateProfileValidation, handleValidationErrors } from '../middleware/profileValidation.middleware';
 

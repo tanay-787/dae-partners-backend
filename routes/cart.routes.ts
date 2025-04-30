@@ -1,6 +1,6 @@
 import express from 'express';
 import { body, param } from 'express-validator';
-import { getCart, addItemToCart, updateCartItemQuantity, removeCartItem } from '../controllers/cartControllers/cart.controller';
+import { getCart, addItemToCart, updateCartItemQuantity, removeCartItem } from '../controllers/cart.controller';
 import { authenticateToken } from '../middleware/auth.middleware';
 import { handleValidationErrors } from '../middleware/profileValidation.middleware'; // Using the existing error handler
 

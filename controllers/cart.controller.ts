@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import prisma from "../../prisma/prismaClient";
+import prisma from "../prisma/prismaClient";
 import { Cart, CartItem, Product, PricingTier, DiscountRule } from '../generated/prisma';
 
 // Helper function to get or create a user's cart

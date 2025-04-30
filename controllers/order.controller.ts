@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import prisma from "../../prisma/prismaClient";
+import prisma from "../prisma/prismaClient";
 import { PricingTier, DiscountRule, Product, CartItem } from '../generated/prisma';
 
 // Helper function to calculate the effective *unit* price of a single cart item for order creation
