@@ -119,9 +119,33 @@ export const createOrder = async (req: Request, res: Response) => {
 
          finalOrderTotal = Math.max(0, calculatedSubtotal - bestCartDiscount);
 
-        // Use a transaction to ensure atomicity of order creation and cart clearing
+        // Use a transaction to ensure atomicity of order creation, inventory update, and cart clearing
         const order = await prisma.$transaction(async (prisma) => {
-            // Create the Order record with the final calculated total amount
+
+             // 1. Check and update product inventory
+             for (const item of userCart.items) {
+                 const product = await prisma.product.findUnique({
+                     where: { id: item.productId },
+                     select: { inventory: true, name: true }, // Select only inventory and name
+                 });
+
+                 if (!product) {
+                      // This case should ideally not happen if cart items link to valid products
+                      throw new Error(`Product with ID ${item.productId} not found.`);
+                 }
+
+                 if (product.inventory === null || product.inventory < item.quantity) {
+                     throw new Error(`Insufficient inventory for product: ${product.name}. Available: ${product.inventory || 0}, Requested: ${item.quantity}`);
+                 }
+
+                 // Decrement inventory
+                 await prisma.product.update({
+                     where: { id: item.productId },
+                     data: { inventory: { decrement: item.quantity } },
+                 });
+             }
+
+            // 2. Create the Order record with the final calculated total amount
             const newOrder = await prisma.order.create({
                 data: {
                     userId: userId,
@@ -137,17 +161,12 @@ export const createOrder = async (req: Request, res: Response) => {
                 orderId: newOrder.id,
             }));
 
-            // Create OrderItem records
+            // 3. Create OrderItem records
             await prisma.orderItem.createMany({
                 data: orderItemsDataWithOrderId,
             });
 
-            // TODO: Update product inventory (Decrement stock for each item purchased)
-            // This would involve iterating through cart items and updating Product models *within the transaction*.
-            // You'd need to handle cases where inventory is insufficient and potentially roll back the transaction.
-            // Example: for (const item of userCart.items) { await prisma.product.update({ where: { id: item.productId }, data: { inventory: { decrement: item.quantity } } }); }
-
-            // Clear the user's cart items
+            // 4. Clear the user's cart items
             await prisma.cartItem.deleteMany({
                 where: {
                     cartId: userCart.id,
@@ -159,16 +178,21 @@ export const createOrder = async (req: Request, res: Response) => {
             return newOrder; // Return the created order
         });
 
-        // TODO: Optional: Integrate Payment Initiation
+        // TODO: Optional: 5. Integrate Payment Initiation
         // If payment is required at this stage, initiate the payment process here
         // using a payment gateway SDK and potentially update the order status based on payment outcome.
 
         res.status(201).json({ message: 'Order created successfully', orderId: order.id, totalAmount: order.totalAmount });
 
     } catch (error) {
-        console.error('Error creating order with pricing:', error);
-        // If an error occurred within the transaction, Prisma automatically rolls it back.
-        res.status(500).json({ error: 'Failed to create order' });
+        console.error('Error creating order with inventory management:', error);
+        // Check if the error is an inventory error
+        if (error.message.startsWith('Insufficient inventory')) {
+             res.status(400).json({ error: error.message });
+        } else {
+            // If another error occurred within the transaction, Prisma automatically rolls it back.
+            res.status(500).json({ error: 'Failed to create order' });
+        }
     }
 };
 

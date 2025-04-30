@@ -32,6 +32,7 @@ model Product {
   price       Float
   image       String?
   category    String?
+  inventory   Int?           // Add the inventory field here
   cartItems   CartItem[]     // A product can be in multiple cart items
   orderItems  OrderItem[]    // A product can be in multiple order items
   discountRules DiscountRule[] // A product can have associated discount rules
