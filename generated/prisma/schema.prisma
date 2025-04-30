@@ -2,7 +2,7 @@
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
 // Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Try Prisma Accelerate: https://prisly.dev/cli/accelerate-init
 
 generator client {
   provider = "prisma-client-js"
@@ -15,8 +15,95 @@ datasource db {
 }
 
 model User {
-  id        Int      @id @default(autoincrement())
-  email     String   @unique
-  password  String
+  id            String       @id @default(uuid())
+  email         String       @unique
+  password      String
+  createdAt     DateTime     @default(now())
+  cart          Cart? // A user can have one cart
+  orders        Order[]
+  pricingTierId String? // Optional: Link user to a pricing tier
+  pricingTier   PricingTier? @relation(fields: [pricingTierId], references: [id])
+}
+
+model Product {
+  id            String         @id @default(uuid())
+  name          String
+  description   String?
+  price         Float
+  image         String?
+  category      String?
+  cartItems     CartItem[] // A product can be in multiple cart items
+  orderItems    OrderItem[] // A product can be in multiple order items
+  discountRules DiscountRule[] // A product can have associated discount rules
+}
+
+model Cart {
+  id        String     @id @default(uuid())
+  userId    String     @unique // Ensure one cart per user
+  user      User       @relation(fields: [userId], references: [id])
+  items     CartItem[]
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+}
+
+model CartItem {
+  id        String   @id @default(uuid())
+  cartId    String
+  cart      Cart     @relation(fields: [cartId], references: [id])
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  quantity  Int      @default(1)
   createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([cartId, productId]) // Ensure a product is only added once per cart
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id])
+  totalAmount Float
+  status      String
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+  items       OrderItem[]
+  // TODO: Add other order fields like shippingAddress, paymentStatus etc.
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  order     Order   @relation(fields: [orderId], references: [id])
+  productId String
+  product   Product @relation(fields: [productId], references: [id])
+  quantity  Int
+  price     Float // Price at the time of order
+  // TODO: Potentially add discount applied to this item
+}
+
+model PricingTier {
+  id            String         @id @default(uuid())
+  name          String         @unique // e.g., 'Retail', 'Wholesale'
+  description   String?
+  users         User[] // Users belonging to this pricing tier
+  discountRules DiscountRule[] // Discount rules applicable to this tier
+}
+
+model DiscountRule {
+  id                        String       @id @default(uuid())
+  name                      String // e.g., '10% off all soft drinks', '$5 off orders over $100'
+  type                      String // e.g., 'percentage', 'fixed'
+  value                     Float // The discount value (e.g., 0.10 for 10%, 5.00 for $5)
+  // Conditions for applicability (optional fields)
+  applicableToProductId     String? // Optional: Link to a specific product
+  applicableToProduct       Product?     @relation(fields: [applicableToProductId], references: [id])
+  applicableToPricingTierId String? // Optional: Link to a specific pricing tier
+  applicableToPricingTier   PricingTier? @relation(fields: [applicableToPricingTierId], references: [id])
+  minimumQuantity           Int? // Optional: Minimum quantity of a product for discount
+  minimumOrderAmount        Float? // Optional: Minimum total order amount for discount
+  isActive                  Boolean      @default(true)
+  createdAt                 DateTime     @default(now())
+  updatedAt                 DateTime     @updatedAt
+  // TODO: Add fields for date range applicability, maximum discount amount, etc.
 }
