@@ -11,7 +11,7 @@ const app = express();
 const port = parseInt(process.env.PORT) || process.argv[3] || 8080;
 
 // Mount webhook routes BEFORE express.json()
-app.use('/api/webhooks', webhookRoutes);
+// app.use('/api/webhooks', webhookRoutes);
 
 app.use(express.json());
 

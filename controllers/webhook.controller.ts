@@ -5,11 +5,12 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '';
+const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '123';
 
 export const handleRazorpayWebhook = async (req: Request, res: Response) => {
     const signature = req.headers['x-razorpay-signature'] as string;
-    const body = req.rawBody; // Requires body-parser configured with { verify:..., raw: true }
+    const body = rnpm install && npx prisma generate && npx prisma migrate deploy
+.rawBody; // Requires body-parser configured with { verify:..., raw: true }
 
     if (!signature || !body) {
         return res.status(400).send('Missing signature or body');

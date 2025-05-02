@@ -8,8 +8,8 @@ dotenv.config();
 
 // Initialize Razorpay client
 const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || '',
-    key_secret: process.env.RAZORPAY_KEY_SECRET || '',
+    key_id: process.env.RAZORPAY_KEY_ID || '123',
+    key_secret: process.env.RAZORPAY_KEY_SECRET || '123',
 });
 
 // Helper function to calculate the effective *unit* price of a single cart item for order creation
