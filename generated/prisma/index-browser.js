@@ -157,7 +157,8 @@ exports.Prisma.OrderScalarFieldEnum = {
   totalAmount: 'totalAmount',
   status: 'status',
   createdAt: 'createdAt',
-  updatedAt: 'updatedAt'
+  updatedAt: 'updatedAt',
+  razorpayOrderId: 'razorpayOrderId'
 };
 
 exports.Prisma.OrderItemScalarFieldEnum = {

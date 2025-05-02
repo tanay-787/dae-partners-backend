@@ -1,9 +1,18 @@
 import { Request, Response } from 'express';
 import prisma from "../prisma/prismaClient";
 import { PricingTier, DiscountRule, Product, CartItem } from '../generated/prisma';
+import Razorpay from 'razorpay';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+// Initialize Razorpay client
+const razorpay = new Razorpay({
+    key_id: process.env.RAZORPAY_KEY_ID || '',
+    key_secret: process.env.RAZORPAY_KEY_SECRET || '',
+});
 
 // Helper function to calculate the effective *unit* price of a single cart item for order creation
-// This is similar to the one in the cart controller but focused on storing the per-unit price in OrderItem
 const calculateOrderItemUnitPrice = (
     cartItem: CartItem & { product: Product },
     userPricingTier: PricingTier | null,
@@ -14,30 +23,24 @@ const calculateOrderItemUnitPrice = (
 
     const applicableRules = discountRules.filter(rule =>
         rule.isActive &&
-        // Rule applies if it's a general rule OR applies to the user's tier OR applies to this specific product
         (!rule.applicableToPricingTierId || rule.applicableToPricingTierId === userPricingTier?.id) &&
         (!rule.applicableToProductId || rule.applicableToProductId === cartItem.productId) &&
-        // Check quantity condition if it exists
         (!rule.minimumQuantity || cartItem.quantity >= rule.minimumQuantity)
-        // Note: minimumOrderAmount rules are not applied here, only at the order total level
     );
 
     applicableRules.forEach(rule => {
         let discountAmount = 0;
         if (rule.type === 'percentage') {
-            discountAmount = itemPrice * rule.value; // Apply percentage to base price per unit
+            discountAmount = itemPrice * rule.value;
         } else if (rule.type === 'fixed') {
-             // For fixed discounts on items, apply per unit.
-             discountAmount = rule.value;
+            discountAmount = rule.value;
         }
 
-         // For simplicity, apply the best single discount to the item's base price per unit
         if (discountAmount > bestDiscountAmount) {
             bestDiscountAmount = discountAmount;
         }
     });
 
-    // Calculate the final unit price after applying the best discount per unit
     const finalUnitPrice = Math.max(0, itemPrice - bestDiscountAmount);
 
     return finalUnitPrice;
@@ -51,7 +54,6 @@ export const createOrder = async (req: Request, res: Response) => {
             return res.status(401).json({ error: 'User not authenticated' });
         }
 
-        // Fetch user's cart with items and product details, user's pricing tier, and all active discount rules
          const [userCart, user, discountRules] = await Promise.all([
              prisma.cart.findUnique({
                  where: {
@@ -69,7 +71,7 @@ export const createOrder = async (req: Request, res: Response) => {
                  where: { id: userId },
                  include: { pricingTier: true },
              }),
-             prisma.discountRule.findMany({ where: { isActive: true } }), // Fetch all active rules
+             prisma.discountRule.findMany({ where: { isActive: true } }),
          ]);
 
         if (!userCart || userCart.items.length === 0) {
@@ -80,30 +82,26 @@ export const createOrder = async (req: Request, res: Response) => {
 
         let calculatedSubtotal = 0;
         const orderItemsData = userCart.items.map(item => {
-             // Calculate the discounted unit price for this item at the time of order creation
              const discountedUnitPrice = calculateOrderItemUnitPrice(item, userPricingTier, discountRules);
              const itemTotal = discountedUnitPrice * item.quantity;
-             calculatedSubtotal += itemTotal; // Sum up item totals for subtotal
+             calculatedSubtotal += itemTotal;
 
             return {
-                orderId: '', // Will be filled during transaction
+                orderId: '',
                 productId: item.productId,
                 quantity: item.quantity,
-                price: discountedUnitPrice, // Store the calculated discounted unit price
-                // TODO: Potentially store applied discount info on OrderItem
+                price: discountedUnitPrice,
             };
         });
 
-        // TODO: Apply cart-level discounts (e.g., minimum order amount discount) to the calculated subtotal
         let finalOrderTotal = calculatedSubtotal;
          const cartLevelDiscounts = discountRules.filter(rule =>
               rule.isActive &&
              (!rule.applicableToPricingTierId || rule.applicableToPricingTierId === userPricingTier?.id) &&
-             rule.minimumOrderAmount !== null && // Rule has a minimum order amount condition
-             calculatedSubtotal >= rule.minimumOrderAmount // Condition is met based on subtotal
+             rule.minimumOrderAmount !== null &&
+             calculatedSubtotal >= rule.minimumOrderAmount
          );
 
-          // For simplicity, apply the best single cart-level discount
          let bestCartDiscount = 0;
           cartLevelDiscounts.forEach(rule => {
              let discountAmount = 0;
@@ -119,18 +117,23 @@ export const createOrder = async (req: Request, res: Response) => {
 
          finalOrderTotal = Math.max(0, calculatedSubtotal - bestCartDiscount);
 
-        // Use a transaction to ensure atomicity of order creation, inventory update, and cart clearing
+        // Ensure total amount is a positive integer (Razorpay requires amount in smallest unit like paisa)
+        const razorpayAmount = Math.round(finalOrderTotal * 100);
+        if (razorpayAmount <= 0) {
+             return res.status(400).json({ error: 'Order total must be positive for payment' });
+        }
+
+        // Use a transaction to ensure atomicity
         const order = await prisma.$transaction(async (prisma) => {
 
              // 1. Check and update product inventory
              for (const item of userCart.items) {
                  const product = await prisma.product.findUnique({
                      where: { id: item.productId },
-                     select: { inventory: true, name: true }, // Select only inventory and name
+                     select: { inventory: true, name: true },
                  });
 
                  if (!product) {
-                      // This case should ideally not happen if cart items link to valid products
                       throw new Error(`Product with ID ${item.productId} not found.`);
                  }
 
@@ -138,24 +141,23 @@ export const createOrder = async (req: Request, res: Response) => {
                      throw new Error(`Insufficient inventory for product: ${product.name}. Available: ${product.inventory || 0}, Requested: ${item.quantity}`);
                  }
 
-                 // Decrement inventory
                  await prisma.product.update({
                      where: { id: item.productId },
                      data: { inventory: { decrement: item.quantity } },
                  });
              }
 
-            // 2. Create the Order record with the final calculated total amount
+            // 2. Create the Order record
             const newOrder = await prisma.order.create({
                 data: {
                     userId: userId,
                     totalAmount: finalOrderTotal,
-                    status: 'Pending', // Initial status (e.g., Pending, Processing, etc.)
-                    // TODO: Add other order fields as per your schema (e.g., shippingAddress)
+                    status: 'PendingPayment', // Set status to reflect pending payment
+                    // TODO: Add other order fields
                 },
             });
 
-            // Assign the created order's ID to the order items data
+            // Assign the created order's ID
             const orderItemsDataWithOrderId = orderItemsData.map(item => ({
                 ...item,
                 orderId: newOrder.id,
@@ -172,29 +174,49 @@ export const createOrder = async (req: Request, res: Response) => {
                     cartId: userCart.id,
                 },
             });
-            // Optional: Delete the cart itself if you don't want to keep empty carts
-            // await prisma.cart.delete({ where: { id: userCart.id } });
 
-            return newOrder; // Return the created order
+            // 5. Create Razorpay Order
+            const razorpayOrder = await razorpay.orders.create({ // Corrected variable name here
+                amount: razorpayAmount, // amount in paisa
+                currency: 'INR', // Your currency
+                receipt: newOrder.id, // Use your internal order ID as receipt
+                // TODO: Add other parameters as needed (e.g., notes)
+            });
+
+             // 6. Store the razorpay_order_id in your database order record
+             const updatedOrder = await prisma.order.update({
+                 where: { id: newOrder.id },
+                 data: {
+                     razorpayOrderId: razorpayOrder.id,
+                 }
+             });
+
+            return { ...updatedOrder, razorpayOrder }; // Return both internal order and razorpay order details
         });
 
-        // TODO: Optional: 5. Integrate Payment Initiation
-        // If payment is required at this stage, initiate the payment process here
-        // using a payment gateway SDK and potentially update the order status based on payment outcome.
-
-        res.status(201).json({ message: 'Order created successfully', orderId: order.id, totalAmount: order.totalAmount });
+        // Send the internal order ID and Razorpay order details to the frontend
+        res.status(201).json({
+            message: 'Order created and payment initiated',
+            orderId: order.id, // Your internal order ID
+            totalAmount: order.totalAmount, // Final calculated total
+            razorpayOrder: order.razorpayOrder, // Details from Razorpay
+            razorpayKeyId: process.env.RAZORPAY_KEY_ID, // Send Key ID to frontend for checkout
+        });
 
     } catch (error) {
-        console.error('Error creating order with inventory management:', error);
+        console.error('Error during order creation and payment initiation:', error);
         // Check if the error is an inventory error
-        if (error.message.startsWith('Insufficient inventory')) {
+        if (error instanceof Error && error.message.startsWith('Insufficient inventory')) {
              res.status(400).json({ error: error.message });
         } else {
-            // If another error occurred within the transaction, Prisma automatically rolls it back.
-            res.status(500).json({ error: 'Failed to create order' });
+            // Log other errors and send a generic failure message
+            res.status(500).json({ error: 'Failed to create order and initiate payment' });
         }
     }
 };
+
+// TODO: Implement webhook endpoint for Razorpay
+// This endpoint will receive payment updates from Razorpay and update order status
 
 // GET /api/orders - Get all orders for the authenticated user
 export const getOrdersForUser = async (req: Request, res: Response) => {

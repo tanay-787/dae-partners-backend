@@ -32,7 +32,7 @@ model Product {
   price       Float
   image       String?
   category    String?
-  inventory   Int?           // Add the inventory field here
+  inventory   Int?           
   cartItems   CartItem[]     // A product can be in multiple cart items
   orderItems  OrderItem[]    // A product can be in multiple order items
   discountRules DiscountRule[] // A product can have associated discount rules
@@ -61,14 +61,15 @@ model CartItem {
 }
 
 model Order {
-  id          String      @id @default(uuid())
-  userId      String
-  user        User        @relation(fields: [userId], references: [id])
-  totalAmount Float
-  status      String
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
-  items       OrderItem[]
+  id              String      @id @default(uuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id])
+  totalAmount     Float
+  status          String
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  items           OrderItem[]
+  razorpayOrderId String?     // Add the Razorpay Order ID field here
   // TODO: Add other order fields like shippingAddress, paymentStatus etc.
 }
 
