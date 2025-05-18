@@ -1,16 +1,13 @@
 import { Request, Response } from 'express';
 import prisma from "../prisma/prismaClient";
 import { PricingTier, DiscountRule, Product, CartItem } from '../generated/prisma';
-import Razorpay from 'razorpay';
+import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-// Initialize Razorpay client
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID || '123',
-    key_secret: process.env.RAZORPAY_KEY_SECRET || '123',
-});
+// Initialize Stripe client
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_123');
 
 // Helper function to calculate the effective *unit* price of a single cart item for order creation
 const calculateOrderItemUnitPrice = (
@@ -117,9 +114,9 @@ export const createOrder = async (req: Request, res: Response) => {
 
          finalOrderTotal = Math.max(0, calculatedSubtotal - bestCartDiscount);
 
-        // Ensure total amount is a positive integer (Razorpay requires amount in smallest unit like paisa)
-        const razorpayAmount = Math.round(finalOrderTotal * 100);
-        if (razorpayAmount <= 0) {
+        // Ensure total amount is a positive integer (Stripe requires amount in smallest unit like cents)
+        const stripeAmount = Math.round(finalOrderTotal * 100);
+        if (stripeAmount <= 0) {
              return res.status(400).json({ error: 'Order total must be positive for payment' });
         }
 
@@ -175,32 +172,34 @@ export const createOrder = async (req: Request, res: Response) => {
                 },
             });
 
-            // 5. Create Razorpay Order
-            const razorpayOrder = await razorpay.orders.create({ // Corrected variable name here
-                amount: razorpayAmount, // amount in paisa
-                currency: 'INR', // Your currency
-                receipt: newOrder.id, // Use your internal order ID as receipt
-                // TODO: Add other parameters as needed (e.g., notes)
+            // 5. Create Stripe Payment Intent
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: stripeAmount, // amount in cents
+                currency: 'inr', // Your currency
+                metadata: { orderId: newOrder.id }, // Link to your internal order ID
+                // TODO: Add other parameters as needed (e.g., description, receipt_email)
             });
 
-             // 6. Store the razorpay_order_id in your database order record
+             // 6. Store the stripe_payment_intent_id in your database order record (you might need to add this field to your schema)
+             // For now, we'll return the client secret directly.
              const updatedOrder = await prisma.order.update({
                  where: { id: newOrder.id },
                  data: {
-                     razorpayOrderId: razorpayOrder.id,
+                     // Assuming you have a stripePaymentIntentId field in your Order model
+                     // stripePaymentIntentId: paymentIntent.id,
                  }
              });
 
-            return { ...updatedOrder, razorpayOrder }; // Return both internal order and razorpay order details
+            return { ...updatedOrder, clientSecret: paymentIntent.client_secret }; // Return internal order and Stripe client secret
         });
 
-        // Send the internal order ID and Razorpay order details to the frontend
+        // Send the internal order ID and Stripe client secret to the frontend
         res.status(201).json({
             message: 'Order created and payment initiated',
             orderId: order.id, // Your internal order ID
             totalAmount: order.totalAmount, // Final calculated total
-            razorpayOrder: order.razorpayOrder, // Details from Razorpay
-            razorpayKeyId: process.env.RAZORPAY_KEY_ID, // Send Key ID to frontend for checkout
+            clientSecret: order.clientSecret, // Stripe client secret for the frontend
+            // TODO: Send Stripe publishable key to frontend for checkout
         });
 
     } catch (error) {
@@ -214,9 +213,6 @@ export const createOrder = async (req: Request, res: Response) => {
         }
     }
 };
-
-// TODO: Implement webhook endpoint for Razorpay
-// This endpoint will receive payment updates from Razorpay and update order status
 
 // GET /api/orders - Get all orders for the authenticated user
 export const getOrdersForUser = async (req: Request, res: Response) => {
@@ -249,7 +245,7 @@ export const getOrdersForUser = async (req: Request, res: Response) => {
         console.error('Error fetching user orders:', error);
         res.status(500).json({ error: 'Failed to fetch orders' });
     }
-};
+}
 
 // GET /api/orders/:id - Get a specific order by ID for the authenticated user
 export const getOrderById = async (req: Request, res: Response) => {
@@ -291,4 +287,4 @@ export const getOrderById = async (req: Request, res: Response) => {
         console.error('Error fetching order details:', error);
         res.status(500).json({ error: 'Failed to fetch order details' });
     }
-};
+}

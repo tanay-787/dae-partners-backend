@@ -1,105 +1,89 @@
 import { Request, Response } from 'express';
 import prisma from "../prisma/prismaClient";
-import crypto from 'crypto';
+import Stripe from 'stripe';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
-const razorpayWebhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || '123';
+// Initialize Stripe client
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY || 'sk_test_123');
+const stripeWebhookSecret = process.env.STRIPE_WEBHOOK_SECRET || 'whsec_123';
 
-export const handleRazorpayWebhook = async (req: Request, res: Response) => {
-    const signature = req.headers['x-razorpay-signature'] as string;
-    const body = rnpm install && npx prisma generate && npx prisma migrate deploy
-.rawBody; // Requires body-parser configured with { verify:..., raw: true }
+export const handleStripeWebhook = async (req: Request, res: Response) => {
+    const signature = req.headers['stripe-signature'] as string;
+    // Ensure body-parser is configured with { rawBody: true } or similar to get the raw body
+    const body = (req as any).rawBody; 
 
     if (!signature || !body) {
         return res.status(400).send('Missing signature or body');
     }
 
-    // Verify the signature
-    const expectedSignature = crypto
-        .createHmac('sha256', razorpayWebhookSecret)
-        .update(body)
-        .digest('hex');
-
-    if (expectedSignature !== signature) {
-        console.error('Webhook signature verification failed.');
-        return res.status(400).send('Invalid signature');
-    }
-
-    const event = req.body; // Parsed JSON body after verification
+    let event: Stripe.Event;
 
     try {
-        console.log('Received Razorpay webhook event:', event.event);
-
-        // Handle different event types
-        switch (event.event) {
-            case 'payment.captured':
-                // Payment was successful
-                const payment = event.payload.payment.entity;
-                const razorpayOrderId = payment.order_id; // Get Razorpay Order ID
-
-                // Find your internal order by razorpayOrderId and update its status
-                const order = await prisma.order.findUnique({
-                    where: { razorpayOrderId: razorpayOrderId },
-                });
-
-                if (order) {
-                    await prisma.order.update({
-                        where: { id: order.id },
-                        data: {
-                            status: 'Processing', // Or 'Paid' or relevant next status
-                            // Optionally store more payment details here (payment.id, method, etc.)
-                            // razorpayPaymentId: payment.id, // Add field to schema if needed
-                        },
-                    });
-                    console.log(`Order ${order.id} status updated to Processing (payment captured).`);
-                } else {
-                    console.warn(`Order with Razorpay ID ${razorpayOrderId} not found in DB.`);
-                }
-                break;
-
-            case 'payment.failed':
-                // Payment failed
-                const failedPayment = event.payload.payment.entity;
-                const failedRazorpayOrderId = failedPayment.order_id;
-
-                 const failedOrder = await prisma.order.findUnique({
-                    where: { razorpayOrderId: failedRazorpayOrderId },
-                });
-
-                if (failedOrder && failedOrder.status === 'PendingPayment') {
-                    await prisma.order.update({
-                        where: { id: failedOrder.id },
-                        data: {
-                            status: 'PaymentFailed', // Or 'Cancelled'
-                            // Optionally store failure reason
-                            // paymentFailureReason: failedPayment.error_description,
-                        },
-                    });
-                     console.log(`Order ${failedOrder.id} status updated to PaymentFailed.`);
-                      // TODO: Handle inventory rollback or notification for failed payment if needed
-                } else if (!failedOrder) {
-                     console.warn(`Failed payment webhook received for unknown order with Razorpay ID ${failedRazorpayOrderId}.`);
-                }
-                // If order status is not PendingPayment, it might be a duplicate webhook or already handled
-                break;
-
-            // TODO: Handle other relevant webhook events (e.g., 'order.paid' if you created order first in Razorpay)
-            // Razorpay recommends handling 'payment.captured' for Orders created via their Orders API.
-
-            default:
-                // Handle other event types or ignore
-                console.log(`Unhandled Razorpay event type: ${event.event}`);
-                break;
-        }
-
-        // Acknowledge receipt of the event
-        res.status(200).send('Webhook received');
-
-    } catch (error) {
-        console.error('Error processing Razorpay webhook:', error);
-        // Respond with 500 to signal failure, but be cautious not to get into a retry loop
-        res.status(500).send('Error processing webhook');
+        event = stripe.webhooks.constructEvent(body, signature, stripeWebhookSecret);
+    } catch (err: any) {
+        console.error(`Webhook signature verification failed: ${err.message}`);
+        return res.status(400).send(`Webhook Error: ${err.message}`);
     }
+
+    // Handle the event
+    switch (event.type) {
+        case 'payment_intent.succeeded':
+            const paymentIntentSucceeded = event.data.object as Stripe.PaymentIntent;
+            console.log(`PaymentIntent was successful: ${paymentIntentSucceeded.id}`);
+            // Fulfill the purchase, e.g., update order status in your database
+            const orderIdSucceeded = paymentIntentSucceeded.metadata.orderId;
+            if (orderIdSucceeded) {
+                try {
+                    await prisma.order.update({
+                        where: { id: orderIdSucceeded },
+                        data: {
+                            status: 'Processing', // Update status
+                            // Store payment intent ID if you added the field
+                            // stripePaymentIntentId: paymentIntentSucceeded.id,
+                        },
+                    });
+                    console.log(`Order ${orderIdSucceeded} status updated to Processing.`);
+                } catch (dbError) {
+                    console.error(`Error updating order ${orderIdSucceeded} in DB:`, dbError);
+                    // Depending on your retry strategy, you might want to re-throw or handle differently
+                }
+            } else {
+                console.warn(`Received payment_intent.succeeded webhook without orderId in metadata for PaymentIntent: ${paymentIntentSucceeded.id}`);
+            }
+            break;
+
+        case 'payment_intent.payment_failed':
+            const paymentIntentFailed = event.data.object as Stripe.PaymentIntent;
+            console.log(`PaymentIntent failed: ${paymentIntentFailed.id}`);
+            // Notify the user, rollback inventory, etc.
+            const orderIdFailed = paymentIntentFailed.metadata.orderId;
+             if (orderIdFailed) {
+                try {
+                    await prisma.order.update({
+                        where: { id: orderIdFailed },
+                        data: {
+                            status: 'PaymentFailed', // Update status
+                            // Store failure reason if needed
+                            // paymentFailureReason: paymentIntentFailed.last_payment_error?.message,
+                        },
+                    });
+                    console.log(`Order ${orderIdFailed} status updated to PaymentFailed.`);
+                     // TODO: Handle inventory rollback or notification for failed payment if needed
+                } catch (dbError) {
+                    console.error(`Error updating order ${orderIdFailed} in DB:`, dbError);
+                }
+            } else {
+                console.warn(`Received payment_intent.payment_failed webhook without orderId in metadata for PaymentIntent: ${paymentIntentFailed.id}`);
+            }
+            break;
+
+        // Handle other event types
+        default:
+            console.log(`Unhandled event type ${event.type}`);
+    }
+
+    // Return a 200 response to acknowledge receipt of the event
+    res.status(200).json({ received: true });
 };
